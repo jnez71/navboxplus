@@ -63,8 +63,8 @@ Cx = np.zeros((len(t), 5, 5))
 z = np.zeros((len(t), 1))
 
 # Initial conditions
-x[0] = [5, 0, 5, 2, dist[0]]
-xh[0] = [0, 0, 1, 1, 0]
+x[0] = [15, 0, 5, 2, dist[0]]
+xh[0] = [-15, 10, 1, 1, 0]
 Cx[0] = 10*np.eye(5)
 
 # Configure navboxplus
@@ -81,7 +81,11 @@ nav = NavBoxPlus(x0=np.copy(xh[0]),
 for i, ti in enumerate(t[1:]):
 
     # Chose control and predict next state
-    u = nav.predict(r[i], r[i+1], wf0, Cf, dt)
+    try:
+        u = nav.predict(r[i], r[i+1], wf0, Cf, dt)
+    except npl.linalg.LinAlgError:
+        print("Cholesky failed in predict!")
+        break
 
     # Advance true state using control
     wf = np.random.multivariate_normal(wf0_true, Cf_true)
@@ -95,7 +99,11 @@ for i, ti in enumerate(t[1:]):
         z[i+1] = encoder(x[i+1], 0, 0)
 
         # Update state estimate
-        nav.correct('encoder', z[i+1], wh0, Ch)
+        try:
+            nav.correct('encoder', z[i+1], wh0, Ch)
+        except npl.linalg.LinAlgError:
+            print("Cholesky failed in correct!")
+            break
 
     # ...otherwise hold last measurement (for plotting only)
     else:
@@ -113,40 +121,40 @@ if not nav.is_pdef(nav.Cx):
 fig1 = plt.figure()
 fig1.suptitle("Estimation and Tracking via Online UKF-Learned Model", fontsize=22)
 ax1 = fig1.add_subplot(5, 1, 1)
-ax1.plot(t, x[:, 0], label="true", color='g', lw=3)
-ax1.plot(t, xh[:, 0], label="estimate", color='k', ls=':', lw=3)
-ax1.plot(t, r[:, 0], label="desired", color='r', ls='--')
-ax1.set_xlim([0, T])
+ax1.plot(t[:i], x[:i, 0], label="true", color='g', lw=3)
+ax1.plot(t[:i], xh[:i, 0], label="estimate", color='k', ls=':', lw=3)
+ax1.plot(t[:i], r[:i, 0], label="desired", color='r', ls='--')
+ax1.set_xlim([0, ti])
 ax1.set_ylabel("position\ndeg", fontsize=12)
 ax1.legend(loc='upper right')
 ax1.grid(True)
 
 ax1 = fig1.add_subplot(5, 1, 2)
-ax1.plot(t, x[:, 1], label="true", color='g', lw=3)
-ax1.plot(t, xh[:, 1], label="estimate", color='k', ls=':', lw=3)
-ax1.plot(t, r[:, 1], label="desired", color='r', ls='--')
-ax1.set_xlim([0, T])
+ax1.plot(t[:i], x[:i, 1], label="true", color='g', lw=3)
+ax1.plot(t[:i], xh[:i, 1], label="estimate", color='k', ls=':', lw=3)
+ax1.plot(t[:i], r[:i, 1], label="desired", color='r', ls='--')
+ax1.set_xlim([0, ti])
 ax1.set_ylabel("velocity\ndeg/s", fontsize=12)
 ax1.grid(True)
 
 ax1 = fig1.add_subplot(5, 1, 3)
-ax1.plot(t, x[:, 2], label="true", color='g', lw=3)
-ax1.plot(t, xh[:, 2], label="estimate", color='k', ls=':', lw=3)
-ax1.set_xlim([0, T])
+ax1.plot(t[:i], x[:i, 2], label="true", color='g', lw=3)
+ax1.plot(t[:i], xh[:i, 2], label="estimate", color='k', ls=':', lw=3)
+ax1.set_xlim([0, ti])
 ax1.set_ylabel("drag/inertia\n(deg/s^2)/(deg/s)", fontsize=12)
 ax1.grid(True)
 
 ax1 = fig1.add_subplot(5, 1, 4)
-ax1.plot(t, x[:, 3], label="true", color='g', lw=3)
-ax1.plot(t, xh[:, 3], label="estimate", color='k', ls=':', lw=3)
-ax1.set_xlim([0, T])
+ax1.plot(t[:i], x[:i, 3], label="true", color='g', lw=3)
+ax1.plot(t[:i], xh[:i, 3], label="estimate", color='k', ls=':', lw=3)
+ax1.set_xlim([0, ti])
 ax1.set_ylabel("b/inertia\n(deg/s^2)/PWM", fontsize=12)
 ax1.grid(True)
 
 ax1 = fig1.add_subplot(5, 1, 5)
-ax1.plot(t, x[:, 4], label="true", color='g', lw=3)
-ax1.plot(t, xh[:, 4], label="estimate", color='k', ls=':', lw=3)
-ax1.set_xlim([0, T])
+ax1.plot(t[:i], x[:i, 4], label="true", color='g', lw=3)
+ax1.plot(t[:i], xh[:i, 4], label="estimate", color='k', ls=':', lw=3)
+ax1.set_xlim([0, ti])
 ax1.set_ylabel("disturbance\ndeg/s^2", fontsize=12)
 ax1.set_xlabel("time\ns", fontsize=12)
 ax1.grid(True)
@@ -154,8 +162,8 @@ ax1.grid(True)
 fig2 = plt.figure()
 fig2.suptitle("Encoder Measurements", fontsize=22)
 ax2 = fig2.add_subplot(1, 1, 1)
-ax2.plot(t, z, color='b', lw=2)
-ax2.set_xlim([0, T])
+ax2.plot(t[:i], z[:i], color='b', lw=2)
+ax2.set_xlim([0, ti])
 ax2.set_ylabel("ticks", fontsize=16)
 ax2.set_xlabel("time\ns", fontsize=16)
 ax2.grid(True)
