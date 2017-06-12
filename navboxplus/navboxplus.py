@@ -14,7 +14,7 @@ class NavBoxPlus(object):
     Call get_state_and_cov to, you know, get the current state estimate and covariance.
 
     """
-    def __init__(self, x0, Cx0, g, f, hDict, n_r, n_wf, n_whDict,
+    def __init__(self, x0, Cx0, g, f, hDict, n_r, n_wf, n_whDict, plimits=None,
                  xplus=np.add, xminus=np.subtract, alpha=1E-3, beta=2, kappa=1E-6):
         """
               x0: Best guess at the initial full state, (n_x >= n_m)
@@ -22,9 +22,10 @@ class NavBoxPlus(object):
                g: Control generating function, u = g(r, rnext, x, Cx, dt)
                f: Discrete-time state dynamic, xnext = f(xlast, u, wf, dt)
            hDict: Dictionary of sensor model functions, {'sensor_i': zi = hi(x, u, whi)}
-             n_r: Number of state values that we are actually trying to control
+             n_r: Number of physical (non-parameter) state values
             n_wf: Number of values in process noise array
         n_whDict: Dictionary like hDict but containing the lengths of the sensor noise arrays {'sensor_i': n_whi}
+         plimits: List of limits [[mins], [maxs]] for clipping parameter estimates, None means no limiting
            xplus: Perturbs a state by a tangent n_m-vector v on the state manifold, x2 = xplus(x1, v)
           xminus: Returns the tangent n_m-vector v that perturbs one state to another, v = xminus(x2, x1)
            alpha: |
@@ -74,6 +75,13 @@ class NavBoxPlus(object):
             self.n_zDict[key] = _len1d(self.hDict[key](np.random.sample(self.n_x),
                                                        np.random.sample(self.n_u),
                                                        np.random.sample(self.n_whDict[key])))
+
+        # Set and verify parameter estimate limits
+        if plimits is None or self.n_p == 0:
+            self.plimits = None
+        else:
+            self.plimits = np.array(plimits, dtype=np.float64)
+            assert np.all(self.plimits[0] < self.plimits[1])
 
         # Set and verify boxplus
         self.xplus = xplus
@@ -158,6 +166,10 @@ class NavBoxPlus(object):
             fPi_sum += np.outer(fv, fv)
         self.Cx = utp[3]*np.outer(fv0, fv0) + utp[2]*fPi_sum
 
+        # Safety clip parameter estimates
+        if self.plimits is not None:
+            self.x[self.n_r:] = np.clip(self.x[self.n_r:], self.plimits[0], self.plimits[1])
+
         # Over and out
         return np.copy(self.u)
 
@@ -201,6 +213,10 @@ class NavBoxPlus(object):
         K = Pxz.dot(npl.inv(Pzz))
         self.x = self.xplus(self.x, K.dot(z - zh))
         self.Cx = self.Cx - K.dot(Pzz).dot(K.T)
+
+        # Safety clip parameter estimates
+        if self.plimits is not None:
+            self.x[self.n_r:] = np.clip(self.x[self.n_r:], self.plimits[0], self.plimits[1])
 
 
     def get_state_and_cov(self):
