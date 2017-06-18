@@ -37,7 +37,7 @@ wh0 = 0
 Ch = 1  # because the encoder discretization acts like noise
 
 # Simulation time domain (also chooses predict frequency)
-T = 80  # s
+T = 40  # s
 dt = 0.05  # s
 t = np.arange(0, T, dt)  # s
 i_per_z = int(1/(z_per_t*dt))  # iters/sample
