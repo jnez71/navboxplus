@@ -171,9 +171,10 @@ def dynamics(x, u, wf, dt):
 ######################################################################################### CONTROL DESIGN
 
 # Controller configuration
-gains_p = 10*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
-gains_d = 10*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
+gains_p = 5*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
+gains_d = 5*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
 feedback = None; feedforward = None  # for externally recording these quantities
+use_feedforward = False
 
 def controller(r, rnext, x, Cx, dt):
     """
@@ -194,9 +195,12 @@ def controller(r, rnext, x, Cx, dt):
     feedback = gains_p*(Rinv.dot(error[:3])) + gains_d*(error[3:6])
 
     # Solve dynamic for feedforward
-    M, C, D = dyn_mats(np.append(r, x[6:]))
-    rdot = xminus(rnext, r) / dt
-    feedforward = M.dot(rdot[3:]) + (C + D).dot(r[3:])
+    if use_feedforward:
+        M, C, D = dyn_mats(np.append(r, x[6:]))
+        rdot = xminus(rnext, r) / dt
+        feedforward = M.dot(rdot[3:]) + (C + D).dot(r[3:])
+    else:
+        feedforward = np.zeros(3)
 
     # Classic
     return feedback + feedforward
@@ -251,13 +255,13 @@ def lemni(t):
     return ri
 
 # Simulation time domain (also chooses predict frequency)
-T = 30  # s
+T = 40  # s
 dt = 0.01  # s
 t = np.arange(0, T, dt)  # s
 
 # Choose trajectory generator
 tgen = lemni
-new_tgen = T/3  # s
+new_tgen = T  # s
 p_tgen = [10, 20]  # [amplitude, period]
 t_tgen = 0
 
@@ -304,8 +308,7 @@ nav = NavBoxPlus(x0=np.copy(x[0]),
                  hDict={'sensor': sensor},
                  n_r=n_r,
                  n_wf=n_x,
-                 n_whDict={'sensor': n_r},
-                 plimits=None)
+                 n_whDict={'sensor': n_r})
 
 ######################################################################################### SIMULATION
 
@@ -317,6 +320,7 @@ for i, ti in enumerate(t[1:]):
     r[i+1] = tgen(ti+dt)
 
     # Chose control and predict next state
+    if ti > T/4: use_feedforward = True  # Turn on feedforward after convergence
     try:
         u[i+1] = nav.predict(r[i], r[i+1], wf0, Cf, dt)
         uff[i+1] = feedforward
@@ -437,18 +441,25 @@ pnames = ["m-wm_xu", "m-wm_yv", "m*xg-wm_yr", "Iz-wm_nr",
           "d_yvr", "d_nvv", "d_nrv", "d_nvr"]
 fig2 = plt.figure()
 fig2.suptitle('Parameter Estimation', fontsize=20)
-ax = fig2.add_subplot(2, 1, 1)
+ax = fig2.add_subplot(3, 1, 1)
 ax.set_ylabel('Estimates', fontsize=16)
 for i in xrange(n_p):
     ax.plot(t[:end], x[:end, n_r+i], c=colors[i], ls='-')
     ax.plot(t[:end], x_true[:end, n_r+i], c=colors[i], ls='--')
 ax.set_xlim([0, t[end]])
 ax.grid(True)
-ax = fig2.add_subplot(2, 1, 2)
+ax = fig2.add_subplot(3, 1, 2)
 ax.set_ylabel('Errors', fontsize=16)
 perror = x_true[:end, n_r:] - x[:end, n_r:]
 for i in xrange(n_p):
-    ax.plot(t[:end], perror[:end, i], c=colors[i], label=pnames[i])
+    ax.plot(t[:end], perror[:end, i], c=colors[i])
+ax.set_xlim([0, t[end]])
+ax.grid(True)
+ax = fig2.add_subplot(3, 1, 3)
+ax.set_ylabel('Covariance Diagonals', fontsize=16)
+dvs = np.array(map(np.diag, Cx[:end, n_r:, n_r:]))
+for i in xrange(n_p):
+    ax.plot(t[:end], dvs[:end, i], c=colors[i], label=pnames[i])
 ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)', fontsize=16)
 ax.legend(loc='upper right')
