@@ -14,23 +14,24 @@ class NavBoxPlus(object):
     Call get_state_and_cov to, you know, get the current state estimate and covariance.
 
     """
-    def __init__(self, x0, Cx0, g, f, hDict, n_r, n_wf, n_whDict, plimits=None,
-                 xplus=np.add, xminus=np.subtract, alpha=1E-3, beta=2, kappa=1E-6):
+    def __init__(self, x0, Cx0, g, f, hDict, n_r, n_wf, n_whDict,
+                 xplus=np.add, xminus=np.subtract, zminusDict=None,
+                 alpha=1E-3, beta=2, kappa=1E-6):
         """
-              x0: Best guess at the initial full state, (n_x >= n_m)
-             Cx0: Initial state estimate covariance matrix, (n_m by n_m)
-               g: Control generating function, u = g(r, rnext, x, Cx, dt)
-               f: Discrete-time state dynamic, xnext = f(xlast, u, wf, dt)
-           hDict: Dictionary of sensor model functions, {'sensor_i': zi = hi(x, u, whi)}
-             n_r: Number of physical (non-parameter) state values
-            n_wf: Number of values in process noise array
-        n_whDict: Dictionary like hDict but containing the lengths of the sensor noise arrays {'sensor_i': n_whi}
-         plimits: List of limits [[mins], [maxs]] for clipping parameter estimates, None means no limiting
-           xplus: Perturbs a state by a tangent n_m-vector v on the state manifold, x2 = xplus(x1, v)
-          xminus: Returns the tangent n_m-vector v that perturbs one state to another, v = xminus(x2, x1)
-           alpha: |
-            beta: | Unscented transform parameters (Wikipedia's recommendations)
-           kappa: |
+                x0: Best guess at the initial full state, (n_x >= n_m)
+               Cx0: Initial state estimate covariance matrix, (n_m by n_m)
+                 g: Control generating function, u = g(r, rnext, x, Cx, dt)
+                 f: Discrete-time state dynamic, xnext = f(xlast, u, wf, dt)
+             hDict: Dictionary of sensor model functions, {'sensor_i': zi = hi(x, u, whi)}
+               n_r: Number of physical (non-parameter) state values
+              n_wf: Number of values in process noise array
+          n_whDict: Dictionary like hDict but containing the lengths of the sensor noise arrays {'sensor_i': n_whi}
+             xplus: Perturbs a state by a tangent n_m-vector v on the state manifold, x2 = xplus(x1, v)
+            xminus: Returns the tangent n_m-vector v that perturbs one state to another, v = xminus(x2, x1)
+        zminusDict: Dictionary of measurement boxminus functions (like xminus is for the state), None == np.subtract
+             alpha: |
+              beta: | Unscented transform parameters (Wikipedia's recommendations)
+             kappa: |
 
         Dimensionalities of all other variables are deduced from these inputs.
 
@@ -69,19 +70,16 @@ class NavBoxPlus(object):
         # Store sensor dictionaries and key list
         self.hDict = hDict
         self.hKeys = self.hDict.keys()
-        self.n_whDict = {}; self.n_zDict = {}
+        self.n_whDict = {}
+        self.n_zDict = {}
+        self.zminusDict = {}
         for key in self.hKeys:
             self.n_whDict[key] = int(n_whDict[key])
             self.n_zDict[key] = _len1d(self.hDict[key](np.random.sample(self.n_x),
                                                        np.random.sample(self.n_u),
                                                        np.random.sample(self.n_whDict[key])))
-
-        # Set and verify parameter estimate limits
-        if plimits is None or self.n_p == 0:
-            self.plimits = None
-        else:
-            self.plimits = np.array(plimits, dtype=np.float64)
-            assert np.all(self.plimits[0] < self.plimits[1])
+            try: self.zminusDict[key] = zminusDict[key]
+            except: self.zminusDict[key] = np.subtract
 
         # Set and verify boxplus
         self.xplus = xplus
@@ -122,10 +120,14 @@ class NavBoxPlus(object):
             lba = ldLpl + bp1ma2
             self.utpDict[key] = [Lpl, ldLpl, r2Lpl, lba]
 
-        # Super sensor dictionary contains all sensor metadata so only one dictionary lookup is needed
+        # Super sensor dictionary contains all sensor metadata
         self.hDict_full = {}
         for key in self.hKeys:
-            self.hDict_full[key] = (self.hDict[key], self.n_zDict[key], self.n_whDict[key], self.utpDict[key])
+            self.hDict_full[key] = (self.hDict[key],
+                                    self.zminusDict[key],
+                                    self.n_zDict[key],
+                                    self.n_whDict[key],
+                                    self.utpDict[key])
 
 
     def predict(self, r, rnext, wf0, Cf, dt):
@@ -143,7 +145,7 @@ class NavBoxPlus(object):
         # Compute control action
         self.u = self.g(r, rnext, self.x, self.Cx, dt)
 
-        # Store relevant parameters (no need to repeat dictionary lookups)
+        # Store relevant parameters
         utp = self.utpDict['_f']
 
         # Compute sigma points, propagate through process, and store tangent-space representation
@@ -166,10 +168,6 @@ class NavBoxPlus(object):
             fPi_sum += np.outer(fv, fv)
         self.Cx = utp[3]*np.outer(fv0, fv0) + utp[2]*fPi_sum
 
-        # Safety clip parameter estimates
-        if self.plimits is not None:
-            self.x[self.n_r:] = np.clip(self.x[self.n_r:], self.plimits[0], self.plimits[1])
-
         # Over and out
         return np.copy(self.u)
 
@@ -184,23 +182,23 @@ class NavBoxPlus(object):
         Updates the state estimate with the given sensor measurement.
 
         """
-        # Store relevant parameters (no need to repeat dictionary lookups)
-        h, n_z, _, utp = self.hDict_full[sensor]
+        # Store relevant functions and parameters
+        h, zminus, n_z, _, utp = self.hDict_full[sensor]
 
-        # Compute sigma points and emulate their measurement
+        # Compute sigma points and emulate their measurement error
         M = spl.cholesky(utp[0]*spl.block_diag(self.Cx, Ch))
         V = np.vstack((M, -M))
         s0 = np.append(self.x, wh0)
-        hS = np.zeros((1+len(V), n_z))
-        hS[0] = self.sh(s0, h)
+        hE = [zminus(z, self.sh(s0, h))]
         for i, Vi in enumerate(V):
-            hS[i+1] = self.sh(self.sxplus(s0, Vi), h)
+            hE.append(zminus(z, self.sh(self.sxplus(s0, Vi), h)))
+        hE = np.array(hE)
 
-        # Determine the mean of the sigma measurements
-        zh = utp[1]*hS[0] + utp[2]*np.sum(hS[1:], axis=0)
+        # Determine the mean of the sigma measurement errors
+        e0 = utp[1]*hE[0] + utp[2]*np.sum(hE[1:], axis=0)
 
         # Determine the covariance and cross-covariance
-        hV = hS - zh
+        hV = hE - e0
         hPi_sum = np.zeros((n_z, n_z))
         hPci_sum = np.zeros((self.n_m, n_z))
         for Vqi, hVi in zip(V[:, :self.n_m], hV[1:]):
@@ -211,12 +209,8 @@ class NavBoxPlus(object):
 
         # Kalman update the state estimate and covariance
         K = Pxz.dot(npl.inv(Pzz))
-        self.x = self.xplus(self.x, K.dot(z - zh))
+        self.x = self.xplus(self.x, -K.dot(e0))
         self.Cx = self.Cx - K.dot(Pzz).dot(K.T)
-
-        # Safety clip parameter estimates
-        if self.plimits is not None:
-            self.x[self.n_r:] = np.clip(self.x[self.n_r:], self.plimits[0], self.plimits[1])
 
 
     def get_state_and_cov(self):
