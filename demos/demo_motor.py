@@ -86,8 +86,7 @@ nav = NavBoxPlus(x0=np.copy(xh[0]),
                  hDict={'encoder': lambda x, u, wh: res*x[0] + wh},
                  n_r=2,
                  n_wf=5,
-                 n_whDict={'encoder': 1},
-                 plimits=[[0.5, 0.5, -np.inf], [20, 20, np.inf]])
+                 n_whDict={'encoder': 1})
 
 # Simulation
 for i, ti in enumerate(t[1:]):
