@@ -39,7 +39,7 @@ z_torque           N*m
 ------------
 Sensor Suite
 ------------
-Perfect measurement of the non-parameter states,
+Direct measurement of the non-parameter states,
 a typical assumption of adaptive controllers!
 
 """
@@ -166,7 +166,7 @@ def dynamics(x, u, wf, dt):
 
     # M*vdot + C*v + D*v = u  and  pdot = R*v
     xdot = np.concatenate((R.dot(x[3:6]), npl.inv(M).dot(u - (C + D).dot(x[3:6])), np.zeros(13)))
-    return xplus(x + xdot*dt, wf)
+    return xplus(x + xdot*dt, wf*np.sqrt(dt))
 
 ######################################################################################### CONTROL DESIGN
 
@@ -208,11 +208,11 @@ def controller(r, rnext, x, Cx, dt):
 def sensor(x, u, wh):
     """
     Algebraic sensor model.
-    Perfect measurement of the non-parameter states,
+    Direct measurement of the non-parameter states,
     a typical assumption of adaptive controllers!
 
     """
-    return x[:6] + wh
+    return xplus(x[:6], wh)
 
 ######################################################################################### GUIDANCE
 
@@ -276,16 +276,16 @@ n_z = 6
 
 # True noise characteristics
 wf0_true = np.zeros(n_x)
-Cf_true = np.zeros((n_x, n_x))
+Cf_true = 0*np.eye(n_x)
 wh0_true = np.zeros(n_z)
-Ch_true = np.zeros((n_z, n_z))
+Ch_true = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 
 # Our guesses at the noise characteristics
 # We cannot express any perfect confidence
 wf0 = np.zeros(n_x)
-Cf = np.diag(np.append(1E-10*np.ones(n_r), 1E-4*np.ones(n_p)))
+Cf = np.diag(np.append(1E-10*np.ones(n_r), 1E-10*np.ones(n_p)))
 wh0 = np.zeros(n_z)
-Ch = 1E-10*np.eye(n_z)
+Ch = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 
 # State, estimate, covariance, reference, and effort timeseries
 x_true = np.zeros((len(t), n_x))
@@ -298,7 +298,7 @@ uff = np.zeros((len(t), n_u))
 # Initial conditions
 x_true[0] = np.append(tgen(0), params_true.vec)
 x[0] = np.append(tgen(0), params.vec)
-Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), 50*np.ones(n_p)))
+Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), (2500)**2*np.ones(n_p)))
 
 # Configure navboxplus
 nav = NavBoxPlus(x0=np.copy(x[0]),
@@ -308,7 +308,10 @@ nav = NavBoxPlus(x0=np.copy(x[0]),
                  hDict={'sensor': sensor},
                  n_r=n_r,
                  n_wf=n_x,
-                 n_whDict={'sensor': n_r})
+                 n_whDict={'sensor': n_r},
+                 xplus=xplus,
+                 xminus=xminus,
+                 zminusDict={'sensor': xminus})
 
 ######################################################################################### SIMULATION
 
@@ -350,7 +353,8 @@ print("Final parameter RMS error: {}".format(np.sqrt(npl.norm(x_true[-1, n_r:] -
 
 # Just checkin...
 if not nav.is_pdef(nav.Cx):
-    print("WOAH your state estimate covariance is not posdef, how'd that happen?\n")
+    print("WOAH your state estimate covariance is not posdef, how'd that happen?")
+    print("Most likely, a parameter went aphysical and destroyed your dynamic. Zero mass?\n")
 
 ######################################################################################### PLOTS
 
@@ -363,24 +367,28 @@ fig1cols = 4
 # Plot x position
 ax = fig1.add_subplot(fig1rows, fig1cols, 1)
 ax.set_title('X Position (m)', fontsize=16)
-ax.plot(t[:end], x[:end, 0], 'k',
-        t[:end], r[:end, 0], 'g--')
+ax.plot(t[:end], x_true[:end, 0], 'k', label='True')
+ax.plot(t[:end], x[:end, 0], 'k:', label='Estimate')
+ax.plot(t[:end], r[:end, 0], 'g--', label='Desired')
 ax.set_xlim([0, t[end]])
+ax.legend(loc='upper right')
 ax.grid(True)
 
 # Plot y position
 ax = fig1.add_subplot(fig1rows, fig1cols, 2)
 ax.set_title('Y Position (m)', fontsize=16)
-ax.plot(t[:end], x[:end, 1], 'k',
-        t[:end], r[:end, 1], 'g--')
+ax.plot(t[:end], x[:end, 1], 'k:',
+        t[:end], r[:end, 1], 'g--',
+        t[:end], x_true[:end, 1], 'k')
 ax.set_xlim([0, t[end]])
 ax.grid(True)
 
 # Plot yaw position
 ax = fig1.add_subplot(fig1rows, fig1cols, 3)
 ax.set_title('Heading (deg)', fontsize=16)
-ax.plot(t[:end], np.rad2deg(x[:end, 2]), 'k',
-        t[:end], np.rad2deg(r[:end, 2]), 'g--')
+ax.plot(t[:end], np.rad2deg(x[:end, 2]), 'k:',
+        t[:end], np.rad2deg(r[:end, 2]), 'g--',
+        t[:end], np.rad2deg(x_true[:end, 2]), 'k')
 ax.set_xlim([0, t[end]])
 ax.grid(True)
 
@@ -400,8 +408,9 @@ ax.grid(True)
 # Plot x velocity
 ax = fig1.add_subplot(fig1rows, fig1cols, 5)
 ax.set_title('Surge (m/s)', fontsize=16)
-ax.plot(t[:end], x[:end, 3], 'k',
-        t[:end], r[:end, 3], 'g--')
+ax.plot(t[:end], x[:end, 3], 'k:',
+        t[:end], r[:end, 3], 'g--',
+        t[:end], x_true[:end, 3], 'k')
 ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)')
 ax.grid(True)
@@ -409,8 +418,9 @@ ax.grid(True)
 # Plot y velocity
 ax = fig1.add_subplot(fig1rows, fig1cols, 6)
 ax.set_title('Sway (m/s)', fontsize=16)
-ax.plot(t[:end], x[:end, 4], 'k',
-        t[:end], r[:end, 4], 'g--')
+ax.plot(t[:end], x[:end, 4], 'k:',
+        t[:end], r[:end, 4], 'g--',
+        t[:end], x_true[:end, 4], 'k')
 ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)')
 ax.grid(True)
@@ -418,8 +428,9 @@ ax.grid(True)
 # Plot yaw velocity
 ax = fig1.add_subplot(fig1rows, fig1cols, 7)
 ax.set_title('Yaw Rate (deg/s)', fontsize=16)
-ax.plot(t[:end], np.rad2deg(x[:end, 5]), 'k',
-        t[:end], np.rad2deg(r[:end, 5]), 'g--')
+ax.plot(t[:end], np.rad2deg(x[:end, 5]), 'k:',
+        t[:end], np.rad2deg(r[:end, 5]), 'g--',
+        t[:end], np.rad2deg(x_true[:end, 5]), 'k')
 ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)')
 ax.grid(True)
@@ -474,8 +485,8 @@ ax.set_ylabel('Y (m)')
 ax.plot(x_true[:end, 0], x_true[:end, 1], 'k', r[:, 0], r[:, 1], 'g--')
 ax.scatter(x_true[0, 0], x_true[0, 1], color='r', s=50)
 skip = int(0.75/dt); qscale = 0.25
-ax.quiver(x[::skip, 0], x[::skip, 1],
-          qscale*np.cos(x[::skip, 2]), qscale*np.sin(x[::skip, 2]), width=0.003, color='k')
+ax.quiver(x_true[::skip, 0], x_true[::skip, 1],
+          qscale*np.cos(x_true[::skip, 2]), qscale*np.sin(x_true[::skip, 2]), width=0.003, color='k')
 ax.quiver(r[::skip, 0], r[::skip, 1],
           qscale*np.cos(r[::skip, 2]), qscale*np.sin(r[::skip, 2]), width=0.003, color='g')
 ax.set_aspect('equal', 'datalim')
@@ -485,9 +496,9 @@ ax.grid(True)
 pthick = 80
 lthick = 3
 llen = 1
-p = ax.scatter(x[0, 0], x[0, 1], color='k', s=pthick)
-h = ax.plot([x[0, 0], x[0, 0] + llen*np.cos(x[0, 2])],
-            [x[0, 1], x[0, 1] + llen*np.sin(x[0, 2])], color='k', linewidth=lthick)
+p = ax.scatter(x_true[0, 0], x_true[0, 1], color='k', s=pthick)
+h = ax.plot([x_true[0, 0], x_true[0, 0] + llen*np.cos(x_true[0, 2])],
+            [x_true[0, 1], x_true[0, 1] + llen*np.sin(x_true[0, 2])], color='k', linewidth=lthick)
 pref = ax.scatter(r[0, 0], r[0, 1], color='b', s=pthick)
 href = ax.plot([r[0, 0], r[0, 0] + llen*np.cos(r[0, 2])],
                [r[0, 1], r[0, 1] + llen*np.sin(r[0, 2])], color='b', linewidth=lthick)
@@ -497,9 +508,9 @@ def update_ani(arg, ii=[0]):
     i = ii[0]  # don't ask...
     if np.isclose(t[i], np.around(t[i], 1)):
         fig3.suptitle('Evolution (Time: {})'.format(t[i]), fontsize=24)
-    p.set_offsets((x[i, 0], x[i, 1]))
-    h[0].set_data([x[i, 0], x[i, 0] + llen*np.cos(x[i, 2])],
-                  [x[i, 1], x[i, 1] + llen*np.sin(x[i, 2])])
+    p.set_offsets((x_true[i, 0], x_true[i, 1]))
+    h[0].set_data([x_true[i, 0], x_true[i, 0] + llen*np.cos(x_true[i, 2])],
+                  [x_true[i, 1], x_true[i, 1] + llen*np.sin(x_true[i, 2])])
     pref.set_offsets((r[i, 0], r[i, 1]))
     href[0].set_data([r[i, 0], r[i, 0] + llen*np.cos(r[i, 2])],
                      [r[i, 1], r[i, 1] + llen*np.sin(r[i, 2])])
