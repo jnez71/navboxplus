@@ -9,7 +9,7 @@ Check out the [wiki](https://github.com/jnez71/navboxplus/wiki/) for more detail
 
 ![alt text](http://i.imgur.com/R7ASFXh.png)
 
-(Hype) Using navboxplus for adaptive control of a boat with 13 unknown parameters
+(Hype) Using navboxplus for adaptive control of a boat with 13 unknown parameters:
 
 ![alt text](http://i.imgur.com/46gDrxk.png)
 
