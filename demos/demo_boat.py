@@ -171,18 +171,21 @@ def dynamics(x, u, wf, dt):
 ######################################################################################### CONTROL DESIGN
 
 # Controller configuration
-gains_p = 5*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
-gains_d = 5*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
+gains_p = 3*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
+gains_d = 3*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
+gains_i = 3*np.ones(13)
+integ = np.zeros(13)
 feedback = None; feedforward = None  # for externally recording these quantities
 use_feedforward = False
 
 def controller(r, rnext, x, Cx, dt):
     """
     Controller with feedback and feedforward based on estimated model.
+    The feedback includes an MRAC-style integrator, with internal state "integ".
 
     """
     # For externally recording these quantities
-    global feedback, feedforward
+    global feedback, feedforward, integ
 
     # World to body frame rotation matrix
     sy = np.sin(x[2]); cy = np.cos(x[2])
@@ -190,9 +193,14 @@ def controller(r, rnext, x, Cx, dt):
                      [-sy, cy, 0],
                      [  0,  0, 1]])
 
-    # PD feedback
+    # PID feedback
     error = xminus(r, x[:6])
-    feedback = gains_p*(Rinv.dot(error[:3])) + gains_d*(error[3:6])
+    u_pd = gains_p*(Rinv.dot(error[:3])) + gains_d*error[3:6]
+    Y = np.array(((0, -x[4]*x[5], -x[5]**2, 0, -abs(x[3])*x[3], 0, 0, 0, 0, 0, 0, 0, 0),
+                  (x[3]*x[5], 0, 0, 0, 0, -abs(x[4])*x[4], 0, -abs(x[5])*x[5], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 0),
+                  (-x[3]*x[4], x[3]*x[4], x[3]*x[5], 0, 0, 0, -abs(x[5])*x[5], 0, 0, 0, -abs(x[4])*x[4], -abs(x[5])*x[4], -abs(x[4])*x[5])))
+    integ = integ + gains_i*Y.T.dot(u_pd)*dt
+    feedback = u_pd + Y.dot(integ)
 
     # Solve dynamic for feedforward
     if use_feedforward:
@@ -298,7 +306,7 @@ uff = np.zeros((len(t), n_u))
 # Initial conditions
 x_true[0] = np.append(tgen(0), params_true.vec)
 x[0] = np.append(tgen(0), params.vec)
-Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), (2500)**2*np.ones(n_p)))
+Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), (1500)**2*np.ones(n_p)))
 
 # Configure navboxplus
 nav = NavBoxPlus(x0=np.copy(x[0]),
@@ -323,7 +331,7 @@ for i, ti in enumerate(t[1:]):
     r[i+1] = tgen(ti+dt)
 
     # Chose control and predict next state
-    if ti > T/4: use_feedforward = True  # Turn on feedforward after convergence
+    if ti > 0: use_feedforward = True
     try:
         u[i+1] = nav.predict(r[i], r[i+1], wf0, Cf, dt)
         uff[i+1] = feedforward
