@@ -170,18 +170,28 @@ def dynamics(x, u, wf, dt):
 
 ######################################################################################### CONTROL DESIGN
 
-# Controller configuration
+# PD gains
 gains_p = 3*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
 gains_d = 3*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
+
+# Integral gains
 gains_i = 3*np.ones(13)
+concurrency = 1
 integ = np.zeros(13)
-feedback = None; feedforward = None  # for externally recording these quantities
-use_feedforward = False
+
+# Conservative internal effort limits so UKF can always know the true u that happened
+ulimits = [[-5000, -5000, -2000],
+           [ 5000,  5000 , 2000]]
+
+# For external interaction
+feedback = None
+feedforward = None
 
 def controller(r, rnext, x, Cx, dt):
     """
-    Controller with feedback and feedforward based on estimated model.
-    The feedback includes an MRAC-style integrator, with internal state "integ".
+    Controller with feedback and feedforward.
+    The feedforward is a lowpass filtered mix of tracking
+    error gradient descent and the UKF-estimated feedforward.
 
     """
     # For externally recording these quantities
@@ -193,25 +203,22 @@ def controller(r, rnext, x, Cx, dt):
                      [-sy, cy, 0],
                      [  0,  0, 1]])
 
-    # PID feedback
+    # PD feedback
     error = xminus(r, x[:6])
-    u_pd = gains_p*(Rinv.dot(error[:3])) + gains_d*error[3:6]
+    feedback = gains_p*(Rinv.dot(error[:3])) + gains_d*error[3:6]
+
+    # Concurrent integral feedforward
+    M = np.array([[integ[0],        0,        0],
+                  [       0, integ[1], integ[2]],
+                  [       0, integ[2], integ[3]]])
     Y = np.array(((0, -x[4]*x[5], -x[5]**2, 0, -abs(x[3])*x[3], 0, 0, 0, 0, 0, 0, 0, 0),
                   (x[3]*x[5], 0, 0, 0, 0, -abs(x[4])*x[4], 0, -abs(x[5])*x[5], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 0),
                   (-x[3]*x[4], x[3]*x[4], x[3]*x[5], 0, 0, 0, -abs(x[5])*x[5], 0, 0, 0, -abs(x[4])*x[4], -abs(x[5])*x[4], -abs(x[4])*x[5])))
-    integ = integ + gains_i*Y.T.dot(u_pd)*dt
-    feedback = u_pd + Y.dot(integ)
+    integ = integ + gains_i*(Y.T.dot(feedback) + concurrency*(x[6:] - integ))*dt
+    feedforward = M.dot((rnext[3:]-r[3:])/dt) + Y.dot(integ)
 
-    # Solve dynamic for feedforward
-    if use_feedforward:
-        M, C, D = dyn_mats(np.append(r, x[6:]))
-        rdot = xminus(rnext, r) / dt
-        feedforward = M.dot(rdot[3:]) + (C + D).dot(r[3:])
-    else:
-        feedforward = np.zeros(3)
-
-    # Classic
-    return feedback + feedforward
+    # Internally clip effort within expected true limits so UKF can know u exactly
+    return np.clip(feedback + feedforward, ulimits[0], ulimits[1])
 
 def sensor(x, u, wh):
     """
@@ -291,22 +298,25 @@ Ch_true = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 # Our guesses at the noise characteristics
 # We cannot express any perfect confidence
 wf0 = np.zeros(n_x)
-Cf = np.diag(np.append(1E-10*np.ones(n_r), 1E-10*np.ones(n_p)))
+Cf = np.diag(np.append(1E-6*np.ones(n_r), 1E-6*np.ones(n_p)))
 wh0 = np.zeros(n_z)
 Ch = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 
-# State, estimate, covariance, reference, and effort timeseries
+# Preallocate timeseries
 x_true = np.zeros((len(t), n_x))
 x = np.zeros((len(t), n_x))
+integ_evo = np.zeros((len(t), n_p))
 Cx = np.zeros((len(t), n_x, n_x))
 r = np.zeros((len(t), n_r))
 u = np.zeros((len(t), n_u))
 uff = np.zeros((len(t), n_u))
+dist = np.zeros((len(t), n_u))
 
 # Initial conditions
 x_true[0] = np.append(tgen(0), params_true.vec)
 x[0] = np.append(tgen(0), params.vec)
 Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), (1500)**2*np.ones(n_p)))
+integ_evo[0] = np.copy(integ)
 
 # Configure navboxplus
 nav = NavBoxPlus(x0=np.copy(x[0]),
@@ -331,7 +341,6 @@ for i, ti in enumerate(t[1:]):
     r[i+1] = tgen(ti+dt)
 
     # Chose control and predict next state
-    if ti > 0: use_feedforward = True
     try:
         u[i+1] = nav.predict(r[i], r[i+1], wf0, Cf, dt)
         uff[i+1] = feedforward
@@ -339,9 +348,13 @@ for i, ti in enumerate(t[1:]):
         print("Cholesky failed in predict!")
         break
 
-    # Advance true state using control
+    # Dubiously add some unmodeled disturbance
+    # if ti > 0.5*t[-1] and ti < 0.75*t[-1]:
+        # dist[i+1] = [700, -600, 400] #+ 100*np.sin(2*np.pi/5*ti)
+
+    # Advance true state
     wf_true = np.random.multivariate_normal(wf0_true, Cf_true)
-    x_true[i+1] = dynamics(x_true[i], u[i+1], wf_true, dt)
+    x_true[i+1] = dynamics(x_true[i], u[i+1]+dist[i+1], wf_true, dt)
 
     # Get new measurement from real world
     wh_true = np.random.multivariate_normal(wh0_true, Ch_true)
@@ -356,13 +369,17 @@ for i, ti in enumerate(t[1:]):
 
     # Record new estimate
     x[i+1], Cx[i+1] = nav.get_state_and_cov()
-end = i
-print("Final parameter RMS error: {}".format(np.sqrt(npl.norm(x_true[-1, n_r:] - x[-1, n_r:]))))
+    integ_evo[i+1] = np.copy(integ)
 
 # Just checkin...
 if not nav.is_pdef(nav.Cx):
     print("WOAH your state estimate covariance is not posdef, how'd that happen?")
-    print("Most likely, a parameter went aphysical and destroyed your dynamic. Zero mass?\n")
+    print("Most likely, a parameter went aphysical and destroyed your dynamic. Zero mass?")
+    print("Or maybe, your controller just went unstable?")
+    print("Or perhaps you moved too fast compared to the numerical integration timestep?\n")
+else:
+    print("Final parameter RMS error: {}\n".format(np.sqrt(npl.norm(x_true[-1, n_r:] - x[-1, n_r:]))))
+end = i
 
 ######################################################################################### PLOTS
 
@@ -443,45 +460,59 @@ ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)')
 ax.grid(True)
 
-# Plot parameter estimates
+# Plot unmodeled disturbance
 ax = fig1.add_subplot(fig1rows, fig1cols, 8)
-ax.set_title('Parameter Estimates', fontsize=16)
-colors=plt.cm.rainbow(np.linspace(0, 1, n_p))
-for i in xrange(n_p):
-    ax.plot(t[:end], x[:end, n_r+i], c=colors[i], ls='-')
-    ax.plot(t[:end], x_true[:end, n_r+i], c=colors[i], ls='--')
+ax.set_title('Disturbance (N, N, N*m)', fontsize=16)
+ax.plot(t[:end], dist[:end, 0], 'b')
+ax.plot(t[:end], dist[:end, 1], 'g')
+ax.plot(t[:end], dist[:end, 2], 'r')
 ax.set_xlim([0, t[end]])
 ax.set_xlabel('Time (s)')
 ax.grid(True)
 
 # Create plot for in-depth look at parameters
+colors=plt.cm.rainbow(np.linspace(0, 1, n_p))
 pnames = ["m-wm_xu", "m-wm_yv", "m*xg-wm_yr", "Iz-wm_nr",
           "d_xuu", "d_yvv", "d_nrr", "d_yrr", "d_yrv",
           "d_yvr", "d_nvv", "d_nrv", "d_nvr"]
-fig2 = plt.figure()
-fig2.suptitle('Parameter Estimation', fontsize=20)
-ax = fig2.add_subplot(3, 1, 1)
-ax.set_ylabel('Estimates', fontsize=16)
+fig2a = plt.figure()
+fig2a.suptitle('Parameter Estimation Evolution', fontsize=20)
+fig2b = plt.figure()
+fig2b.suptitle('Parameter Estimation Error', fontsize=20)
+##
+ax = fig2a.add_subplot(2, 1, 1)
+ax.set_ylabel('UKF Estimates', fontsize=16)
 for i in xrange(n_p):
-    ax.plot(t[:end], x[:end, n_r+i], c=colors[i], ls='-')
+    ax.plot(t[:end], x[:end, n_r+i], c=colors[i])
     ax.plot(t[:end], x_true[:end, n_r+i], c=colors[i], ls='--')
 ax.set_xlim([0, t[end]])
 ax.grid(True)
-ax = fig2.add_subplot(3, 1, 2)
-ax.set_ylabel('Errors', fontsize=16)
+##
+ax = fig2a.add_subplot(2, 1, 2)
+ax.set_ylabel('Control Parameters', fontsize=16)
+for i in xrange(n_p):
+    ax.plot(t[:end], integ_evo[:end, i], c=colors[i], label=pnames[i])
+    ax.plot(t[:end], x_true[:end, n_r+i], c=colors[i], ls='--')
+ax.legend(loc='upper right')
+ax.set_xlim([0, t[end]])
+ax.grid(True)
+##
+ax = fig2b.add_subplot(2, 1, 1)
+ax.set_ylabel('UKF Errors', fontsize=16)
 perror = x_true[:end, n_r:] - x[:end, n_r:]
 for i in xrange(n_p):
     ax.plot(t[:end], perror[:end, i], c=colors[i])
 ax.set_xlim([0, t[end]])
 ax.grid(True)
-ax = fig2.add_subplot(3, 1, 3)
+##
+ax = fig2b.add_subplot(2, 1, 2)
 ax.set_ylabel('Covariance Diagonals', fontsize=16)
+ax.set_xlabel('Time (s)', fontsize=16)
 dvs = np.array(map(np.diag, Cx[:end, n_r:, n_r:]))
 for i in xrange(n_p):
     ax.plot(t[:end], dvs[:end, i], c=colors[i], label=pnames[i])
-ax.set_xlim([0, t[end]])
-ax.set_xlabel('Time (s)', fontsize=16)
 ax.legend(loc='upper right')
+ax.set_xlim([0, t[end]])
 ax.grid(True)
 
 # Plot physical trajectory
