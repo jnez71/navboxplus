@@ -187,8 +187,8 @@ gains_p = 3*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
 gains_d = 3*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
 
 # Integral gains
-gains_i = 0.001*np.ones(n_p)
-concurrency = 1E3
+gains_i = 0.0005*np.ones(n_p)
+concurrency = 2E3
 integ = np.zeros(n_p)
 
 # Conservative internal effort limits so UKF can always know the true u that happened
@@ -220,13 +220,13 @@ def controller(r, rnext, x, Cx, dt):
     feedback = gains_p*(Rinv.dot(error[:3])) + gains_d*error[3:6]
 
     # Concurrent integral feedforward
-    M = np.array([[integ[0],        0,        0],
-                  [       0, integ[1], integ[2]],
-                  [       0, integ[2], integ[3]]])
+    M = np.array([[x[6],    0,    0],
+                  [   0, x[7], x[8]],
+                  [   0, x[8], x[9]]])
     Y = np.array(((0, -x[4]*x[5], -x[5]**2, 0, -abs(x[3])*x[3], 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0),
                   (x[3]*x[5], 0, 0, 0, 0, -abs(x[4])*x[4], 0, -abs(x[5])*x[5], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 0, 0, 1, 0),
                   (-x[3]*x[4], x[3]*x[4], x[3]*x[5], 0, 0, 0, -abs(x[5])*x[5], 0, 0, 0, -abs(x[4])*x[4], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 1)))
-    integ = integ + gains_i*(0*Y.T.dot(feedback) + concurrency*(x[6:] - integ))*dt
+    integ = integ + gains_i*(Y.T.dot(feedback) + concurrency*(x[6:] - integ))*dt
     feedforward = M.dot((rnext[3:]-r[3:])/dt) + Y.dot(integ)  # Y*integ = (C+D)*v + dist
 
     # Internally clip effort within expected true limits so UKF can know u exactly
@@ -373,7 +373,7 @@ for i, ti in enumerate(t[1:]):
 
     # Dubiously add some unmodeled disturbance
     if ti > 0.2*t[-1] and ti < 0.5*t[-1]:
-        dist[i+1] = [400, -200, 100] #+ 100*np.sin(2*np.pi/5*ti)
+        dist[i+1] = [400, -200, 100]
     x_true[i, n_x-3:] = dist[i+1]
 
     # Advance true state
@@ -516,6 +516,7 @@ ax.grid(True)
 ##
 ax = fig2a.add_subplot(2, 1, 2)
 ax.set_ylabel('Control Parameters', fontsize=16)
+ax.set_xlabel('Time (s)', fontsize=16)
 for i in xrange(n_p):
     ax.plot(t[:end], integ_evo[:end, i], c=colors[i], label=pnames[i])
     ax.plot(t[:end], x_true[:end, n_r+i], c=colors[i], ls='--')
