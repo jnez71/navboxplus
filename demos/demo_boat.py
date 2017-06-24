@@ -402,7 +402,8 @@ if not nav.is_pdef(nav.Cx):
     print("Or maybe, your controller just went unstable?")
     print("Or perhaps you moved too fast compared to the numerical integration timestep?\n")
 else:
-    print("Final parameter RMS error: {}\n".format(np.sqrt(npl.norm(x_true[-1, n_r:] - x[-1, n_r:]))))
+    print("Final parameter RMS error: {}".format(np.sqrt(npl.norm(x_true[-1, n_r:] - x[-1, n_r:]))))
+    print("Final Full-State Estimate Stdevs\n----\n{}\n----\n").format(np.sqrt(np.diag(nav.Cx).reshape(-1, 1)))
 end = i
 
 ######################################################################################### PLOTS
