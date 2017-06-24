@@ -29,6 +29,10 @@ d_nvv              (N*m)/(m/s)**2    |
 d_nrv              (N*m)/(m*rad/s^2) |
 d_nvr              (N*m)/(m*rad/s^2) |
 
+dist_x             N                 |
+dist_y             N                 | Constant external disturbance
+dist_z             N*m               |
+
 -------------
 Effort Inputs
 -------------
@@ -50,6 +54,13 @@ import matplotlib.animation as animation
 from navboxplus import NavBoxPlus
 
 ######################################################################################### BUILD A BOAT
+
+# Some common dimensionalities
+n_r = 6
+n_p = 16
+n_x = n_r + n_p
+n_u = 3
+n_z = 6
 
 class ShipParams:
     """
@@ -97,7 +108,8 @@ class ShipParams:
                              self.d_yvr,
                              self.d_nvv,
                              self.d_nrv,
-                             self.d_nvr])
+                             self.d_nvr,
+                             0, 0, 0])
 
 # Our true parameters; in the real world these aren't known
 params_true = ShipParams(m=1000, Iz=1500, xg=0.1)
@@ -165,7 +177,7 @@ def dynamics(x, u, wf, dt):
                   [ 0,   0, 1]])
 
     # M*vdot + C*v + D*v = u  and  pdot = R*v
-    xdot = np.concatenate((R.dot(x[3:6]), npl.inv(M).dot(u - (C + D).dot(x[3:6])), np.zeros(13)))
+    xdot = np.concatenate((R.dot(x[3:6]), npl.inv(M).dot(u + x[n_x-3:] - (C + D).dot(x[3:6])), np.zeros(n_p)))
     return xplus(x + xdot*dt, wf*np.sqrt(dt))
 
 ######################################################################################### CONTROL DESIGN
@@ -175,13 +187,13 @@ gains_p = 3*np.array([1000, 1000, 3000])  # [N/m, N/m, (N*m)/rad]
 gains_d = 3*np.array([1000, 1000, 3000])  # [N/(m/s), N/(m/s), (N*m)/(rad/s)]
 
 # Integral gains
-gains_i = 3*np.ones(13)
-concurrency = 1
-integ = np.zeros(13)
+gains_i = 0.001*np.ones(n_p)
+concurrency = 1E3
+integ = np.zeros(n_p)
 
 # Conservative internal effort limits so UKF can always know the true u that happened
-ulimits = [[-5000, -5000, -2000],
-           [ 5000,  5000 , 2000]]
+ulimits = [[-1E6, -1E6, -3E4],
+           [ 1E6,  1E6,  3E4]]
 
 # For external interaction
 feedback = None
@@ -211,11 +223,11 @@ def controller(r, rnext, x, Cx, dt):
     M = np.array([[integ[0],        0,        0],
                   [       0, integ[1], integ[2]],
                   [       0, integ[2], integ[3]]])
-    Y = np.array(((0, -x[4]*x[5], -x[5]**2, 0, -abs(x[3])*x[3], 0, 0, 0, 0, 0, 0, 0, 0),
-                  (x[3]*x[5], 0, 0, 0, 0, -abs(x[4])*x[4], 0, -abs(x[5])*x[5], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 0),
-                  (-x[3]*x[4], x[3]*x[4], x[3]*x[5], 0, 0, 0, -abs(x[5])*x[5], 0, 0, 0, -abs(x[4])*x[4], -abs(x[5])*x[4], -abs(x[4])*x[5])))
-    integ = integ + gains_i*(Y.T.dot(feedback) + concurrency*(x[6:] - integ))*dt
-    feedforward = M.dot((rnext[3:]-r[3:])/dt) + Y.dot(integ)
+    Y = np.array(((0, -x[4]*x[5], -x[5]**2, 0, -abs(x[3])*x[3], 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0),
+                  (x[3]*x[5], 0, 0, 0, 0, -abs(x[4])*x[4], 0, -abs(x[5])*x[5], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 0, 0, 1, 0),
+                  (-x[3]*x[4], x[3]*x[4], x[3]*x[5], 0, 0, 0, -abs(x[5])*x[5], 0, 0, 0, -abs(x[4])*x[4], -abs(x[5])*x[4], -abs(x[4])*x[5], 0, 0, 1)))
+    integ = integ + gains_i*(0*Y.T.dot(feedback) + concurrency*(x[6:] - integ))*dt
+    feedforward = M.dot((rnext[3:]-r[3:])/dt) + Y.dot(integ)  # Y*integ = (C+D)*v + dist
 
     # Internally clip effort within expected true limits so UKF can know u exactly
     return np.clip(feedback + feedforward, ulimits[0], ulimits[1])
@@ -263,10 +275,28 @@ def lemni(t):
     s = np.sin(w*t); c = np.cos(w*t)
     ri[:2] = a*sq2*c/(s**2+1) - (a+1), a*sq2*c*s/(s**2+1)
     v = [(a*sq2*w*s*(s**2 - 3))/(s**2 + 1)**2, (a*sq2*w*(3*np.cos(2*w*t) - 1))/(2*(s**2 + 1)**2)]
-    ri[2] = np.arctan2(v[1], v[0])
+    ri[2] = unwrap(0.5*t)#np.arctan2(v[1], v[0])
     sr = np.sin(ri[2]); cr = np.cos(ri[2])
-    ri[3:] = cr*v[0] + sr*v[1], -sr*v[0] + cr*v[1], -(3*w*c)/(c**2 - 2)
+    ri[3:] = cr*v[0] + sr*v[1], -sr*v[0] + cr*v[1], 0.5#-(3*w*c)/(c**2 - 2)
     t_tgen += dt
+    return ri
+
+def exciting(t):
+    """
+    Trajectory generator for excitement.
+
+    """
+    a, p = p_tgen
+    w = 2*np.pi/(p*3)
+    ri = np.zeros(n_r)
+    ri[0] = a*np.cos(w*t) + a*np.sin(0.9*w*t) - a/2*np.cos(t) + 15*np.arctan(t)
+    ri[1] = -(a*np.cos(w*(t-5)) + a*np.sin(0.9*w*(t-5)) - a/2*np.cos(t-5) + 15*np.arctan(t-5))
+    ri[2] = unwrap(0.8*t)
+    ri[3] = -a*w*np.sin(w*t) + a*0.9*w*np.cos(0.9*w*t) + a/2*np.sin(t) + 15/(t**2+1)
+    ri[4] = -(-a*w*np.sin(w*(t-5)) + a*0.9*w*np.cos(0.9*w*(t-5)) + a/2*np.sin((t-5)) + 15/((t-5)**2+1))
+    ri[5] = 0.8
+    c = np.cos(ri[2]); s = np.sin(ri[2])
+    ri[3:5] = np.dot([[c, s],[-s, c]], ri[3:5])
     return ri
 
 # Simulation time domain (also chooses predict frequency)
@@ -275,19 +305,12 @@ dt = 0.01  # s
 t = np.arange(0, T, dt)  # s
 
 # Choose trajectory generator
-tgen = lemni
+tgen = exciting
 new_tgen = T  # s
 p_tgen = [10, 20]  # [amplitude, period]
 t_tgen = 0
 
 ######################################################################################### SIM AND NAV SETUP
-
-# Some common dimensionalities
-n_r = 6
-n_p = 13
-n_x = n_r + n_p
-n_u = 3
-n_z = 6
 
 # True noise characteristics
 wf0_true = np.zeros(n_x)
@@ -298,7 +321,7 @@ Ch_true = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 # Our guesses at the noise characteristics
 # We cannot express any perfect confidence
 wf0 = np.zeros(n_x)
-Cf = np.diag(np.append(1E-6*np.ones(n_r), 1E-6*np.ones(n_p)))
+Cf = np.diag(np.concatenate((1E-10*np.ones(n_r), 1E-10*np.ones(n_p-3), 9E3*np.ones(3))))
 wh0 = np.zeros(n_z)
 Ch = np.diag([0.05, 0.05, np.deg2rad(0.8), 0.05, 0.05, np.deg2rad(2)])**2
 
@@ -315,7 +338,7 @@ dist = np.zeros((len(t), n_u))
 # Initial conditions
 x_true[0] = np.append(tgen(0), params_true.vec)
 x[0] = np.append(tgen(0), params.vec)
-Cx[0] = np.diag(np.append(1E-10*np.ones(n_r), (1500)**2*np.ones(n_p)))
+Cx[0] = np.diag(np.concatenate((1E-10*np.ones(n_r), (2000)**2*np.ones(n_p-3), 9E3*np.ones(3))))
 integ_evo[0] = np.copy(integ)
 
 # Configure navboxplus
@@ -349,12 +372,13 @@ for i, ti in enumerate(t[1:]):
         break
 
     # Dubiously add some unmodeled disturbance
-    # if ti > 0.5*t[-1] and ti < 0.75*t[-1]:
-        # dist[i+1] = [700, -600, 400] #+ 100*np.sin(2*np.pi/5*ti)
+    if ti > 0.2*t[-1] and ti < 0.5*t[-1]:
+        dist[i+1] = [400, -200, 100] #+ 100*np.sin(2*np.pi/5*ti)
+    x_true[i, n_x-3:] = dist[i+1]
 
     # Advance true state
     wf_true = np.random.multivariate_normal(wf0_true, Cf_true)
-    x_true[i+1] = dynamics(x_true[i], u[i+1]+dist[i+1], wf_true, dt)
+    x_true[i+1] = dynamics(x_true[i], u[i+1], wf_true, dt)
 
     # Get new measurement from real world
     wh_true = np.random.multivariate_normal(wh0_true, Ch_true)
@@ -424,6 +448,7 @@ ax.plot(t[:end], u[:end, 0], 'b', label="Fx")
 ax.plot(t[:end], u[:end, 1], 'g', label="Fy")
 ax.plot(t[:end], u[:end, 2], 'r', label="Mz")
 ax.legend(loc='upper right')
+uff = np.clip(uff, ulimits[0], ulimits[1])
 ax.plot(t[:end], uff[:end, 0], 'b--',
         t[:end], uff[:end, 1], 'g--',
         t[:end], uff[:end, 2], 'r--')
@@ -474,7 +499,8 @@ ax.grid(True)
 colors=plt.cm.rainbow(np.linspace(0, 1, n_p))
 pnames = ["m-wm_xu", "m-wm_yv", "m*xg-wm_yr", "Iz-wm_nr",
           "d_xuu", "d_yvv", "d_nrr", "d_yrr", "d_yrv",
-          "d_yvr", "d_nvv", "d_nrv", "d_nvr"]
+          "d_yvr", "d_nvv", "d_nrv", "d_nvr",
+          "dist_x", "dist_y", "dist_z"]
 fig2a = plt.figure()
 fig2a.suptitle('Parameter Estimation Evolution', fontsize=20)
 fig2b = plt.figure()
